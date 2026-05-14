@@ -14,6 +14,18 @@ export interface MetaStats {
   campaigns: MetaCampaign[]
 }
 
+export interface MetaAd {
+  id: string
+  name: string
+  spend: number
+  impressions: number
+  clicks: number
+  purchases: number
+  revenue: number
+  roas: number
+  thumbnailUrl?: string
+}
+
 export interface MetaCampaign {
   id: string
   name: string
@@ -24,6 +36,7 @@ export interface MetaCampaign {
   purchases: number
   revenue: number
   roas: number
+  ads?: MetaAd[]
 }
 
 export interface GoogleStats {

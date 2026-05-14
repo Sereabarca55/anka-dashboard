@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server'
-import type { PeriodData, MetaStats, MetaCampaign } from '@/lib/types'
+import type { PeriodData, MetaStats, MetaCampaign, MetaAd } from '@/lib/types'
 
 const BASE = 'https://graph.facebook.com/v19.0'
 const ACCOUNT_ID = 'act_493935245667521'
@@ -10,11 +10,22 @@ const FIELDS = [
   'actions', 'action_values',
 ].join(',')
 
-function getAction(actions: {action_type: string; value: string}[], type: string) {
-  return Number(actions?.find(a => a.action_type === type)?.value ?? 0)
+// Meta puede devolver el evento de compra con distintos nombres según el tipo de pixel/app
+const PURCHASE_TYPES = ['purchase', 'omni_purchase', 'offsite_conversion.fb_pixel_purchase']
+
+function getAction(actions: {action_type: string; value: string}[], ...types: string[]) {
+  for (const type of types) {
+    const found = actions?.find(a => a.action_type === type)
+    if (found) return Number(found.value ?? 0)
+  }
+  return 0
 }
-function getActionVal(avs: {action_type: string; value: string}[], type: string) {
-  return Number(avs?.find(a => a.action_type === type)?.value ?? 0)
+function getActionVal(avs: {action_type: string; value: string}[], ...types: string[]) {
+  for (const type of types) {
+    const found = avs?.find(a => a.action_type === type)
+    if (found) return Number(found.value ?? 0)
+  }
+  return 0
 }
 
 async function fetchInsights(token: string, since: string, until: string, level: string, extra = '') {
@@ -35,8 +46,8 @@ function buildSummary(rows: Record<string, unknown>[]): Omit<MetaStats, 'campaig
   const impressions = rows.reduce((s, r) => s + Number(r.impressions ?? 0), 0)
   const reach = rows.reduce((s, r) => s + Number(r.reach ?? 0), 0)
   const clicks = rows.reduce((s, r) => s + Number(r.clicks ?? 0), 0)
-  const purchases = rows.reduce((s, r) => s + getAction(r.actions as {action_type:string;value:string}[] ?? [], 'purchase'), 0)
-  const revenue = rows.reduce((s, r) => s + getActionVal(r.action_values as {action_type:string;value:string}[] ?? [], 'purchase'), 0)
+  const purchases = rows.reduce((s, r) => s + getAction(r.actions as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES), 0)
+  const revenue = rows.reduce((s, r) => s + getActionVal(r.action_values as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES), 0)
   const frequency = rows.length > 0 ? rows.reduce((s, r) => s + Number(r.frequency ?? 0), 0) / rows.length : 0
   return {
     spend: Math.round(spend),
@@ -51,6 +62,27 @@ function buildSummary(rows: Record<string, unknown>[]): Omit<MetaStats, 'campaig
     revenue: Math.round(revenue),
     cpa: purchases > 0 ? Math.round(spend / purchases) : 0,
     roas: spend > 0 ? Math.round((revenue / spend) * 10) / 10 : 0,
+  }
+}
+
+async function fetchAdThumbnails(token: string): Promise<Map<string, string>> {
+  const url = `${BASE}/${ACCOUNT_ID}/ads?` + new URLSearchParams({
+    access_token: token,
+    fields: 'id,creative{thumbnail_url}',
+    limit: '200',
+  })
+  try {
+    const res = await fetch(url)
+    if (!res.ok) return new Map()
+    const data = await res.json()
+    const map = new Map<string, string>()
+    for (const ad of data.data ?? []) {
+      const thumb = ad.creative?.thumbnail_url
+      if (thumb) map.set(String(ad.id), thumb)
+    }
+    return map
+  } catch {
+    return new Map()
   }
 }
 
@@ -72,22 +104,53 @@ export async function GET(req: NextRequest) {
 
   try {
     const prev = prevRange(since, until)
-    const [currAcc, prevAcc, currCamp] = await Promise.all([
+    const [currAcc, prevAcc, currCamp, currAds, thumbnails] = await Promise.all([
       fetchInsights(token, since, until, 'account'),
       fetchInsights(token, prev.since, prev.until, 'account'),
-      fetchInsights(token, since, until, 'campaign', ',campaign_name'),
+      fetchInsights(token, since, until, 'campaign', ',campaign_name,campaign_id'),
+      fetchInsights(token, since, until, 'ad', ',ad_id,ad_name,campaign_id'),
+      fetchAdThumbnails(token),
     ])
 
     const currRows: Record<string,unknown>[] = currAcc.data ?? []
     const prevRows: Record<string,unknown>[] = prevAcc.data ?? []
     const campRows: Record<string,unknown>[] = currCamp.data ?? []
+    const adRows: Record<string,unknown>[] = currAds.data ?? []
+
+    // Group ads by campaign
+    const adsByCampaign = new Map<string, MetaAd[]>()
+    for (const r of adRows) {
+      const campId = r.campaign_id as string
+      const spend = Number(r.spend ?? 0)
+      const purchases = getAction(r.actions as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES)
+      const revenue = getActionVal(r.action_values as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES)
+      const ad: MetaAd = {
+        id: r.ad_id as string,
+        name: r.ad_name as string,
+        spend: Math.round(spend),
+        impressions: Number(r.impressions ?? 0),
+        clicks: Number(r.clicks ?? 0),
+        purchases,
+        revenue: Math.round(revenue),
+        roas: spend > 0 ? Math.round((revenue / spend) * 10) / 10 : 0,
+        thumbnailUrl: thumbnails.get(r.ad_id as string),
+      }
+      const existing = adsByCampaign.get(campId) ?? []
+      existing.push(ad)
+      adsByCampaign.set(campId, existing)
+    }
+    // Sort ads by spend desc
+    for (const ads of adsByCampaign.values()) {
+      ads.sort((a, b) => b.spend - a.spend)
+    }
 
     const campaigns: MetaCampaign[] = campRows.map(r => {
       const spend = Number(r.spend ?? 0)
-      const purchases = getAction(r.actions as {action_type:string;value:string}[] ?? [], 'purchase')
-      const revenue = getActionVal(r.action_values as {action_type:string;value:string}[] ?? [], 'purchase')
+      const purchases = getAction(r.actions as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES)
+      const revenue = getActionVal(r.action_values as {action_type:string;value:string}[] ?? [], ...PURCHASE_TYPES)
+      const campId = r.campaign_id as string
       return {
-        id: r.campaign_id as string,
+        id: campId,
         name: r.campaign_name as string,
         status: 'active',
         spend: Math.round(spend),
@@ -96,6 +159,7 @@ export async function GET(req: NextRequest) {
         purchases,
         revenue: Math.round(revenue),
         roas: spend > 0 ? Math.round((revenue / spend) * 10) / 10 : 0,
+        ads: adsByCampaign.get(campId) ?? [],
       }
     }).sort((a, b) => b.spend - a.spend)
 

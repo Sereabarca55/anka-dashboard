@@ -3,7 +3,7 @@
 import { useState } from 'react'
 import useSWR from 'swr'
 import { formatCLP, formatCLPCompact, fmt, fmtPct, fmtDur, pct } from '@/lib/format'
-import type { PeriodData, MetaStats, GoogleStats, ShopifyStats, GA4Stats } from '@/lib/types'
+import type { PeriodData, MetaStats, MetaAd, GoogleStats, ShopifyStats, GA4Stats } from '@/lib/types'
 
 const fetcher = (url: string) => fetch(url).then(r => r.json())
 
@@ -101,11 +101,44 @@ function SectionTitle({ children }: { children: React.ReactNode }) {
   return <h3 className="text-xs font-semibold text-stone-400 uppercase tracking-widest mb-3 mt-8 first:mt-0">{children}</h3>
 }
 
+// ── Ad Card ───────────────────────────────────────────────────
+
+function AdCard({ ad }: { ad: MetaAd }) {
+  return (
+    <div className="flex items-start gap-3 bg-white rounded-xl border border-stone-100 p-3">
+      {ad.thumbnailUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={ad.thumbnailUrl} alt="" className="w-12 h-12 rounded-lg object-cover flex-shrink-0 bg-stone-100" />
+      ) : (
+        <div className="w-12 h-12 rounded-lg bg-stone-100 flex-shrink-0 flex items-center justify-center">
+          <span className="text-stone-300 text-lg">🖼</span>
+        </div>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-stone-700 truncate leading-tight mb-1.5">{ad.name}</p>
+        <div className="flex items-center gap-3 flex-wrap">
+          <span className="text-xs text-stone-500">{formatCLPCompact(ad.spend)}</span>
+          {ad.roas > 0 && (
+            <span className={`text-xs font-bold ${ad.roas >= 10 ? 'text-emerald-600' : ad.roas >= 5 ? 'text-amber-600' : 'text-red-500'}`}>
+              {ad.roas.toFixed(1)}x
+            </span>
+          )}
+          {ad.purchases > 0 && (
+            <span className="text-xs text-stone-400">{ad.purchases} compras</span>
+          )}
+          <span className="text-xs text-stone-300">{fmt(ad.impressions)} imp.</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // ── Campaign Table ────────────────────────────────────────────
 
-function CampaignRow({ name, spend, roas, conversions, impressions, ctr, cpc, status }: {
+function CampaignRow({ name, spend, roas, conversions, impressions, ctr, cpc, status, ads }: {
   name: string; spend: number; roas?: number; conversions?: number
   impressions: number; ctr: number; cpc: number; status?: string
+  ads?: MetaAd[]
 }) {
   const [open, setOpen] = useState(false)
   const isActive = status?.toUpperCase() === 'ACTIVE' || status?.toUpperCase() === 'ENABLED'
@@ -130,25 +163,37 @@ function CampaignRow({ name, spend, roas, conversions, impressions, ctr, cpc, st
         </div>
       </button>
       {open && (
-        <div className="px-4 pb-4 grid grid-cols-2 sm:grid-cols-4 gap-3 border-t border-stone-50 pt-3 bg-stone-50/50">
-          {conversions !== undefined && (
+        <div className="border-t border-stone-50 bg-stone-50/50">
+          <div className="px-4 pt-3 pb-3 grid grid-cols-2 sm:grid-cols-4 gap-3">
+            {conversions !== undefined && (
+              <div>
+                <p className="text-xs text-stone-400 mb-0.5">Conversiones</p>
+                <p className="text-sm font-semibold text-stone-800">{fmt(conversions)}</p>
+              </div>
+            )}
             <div>
-              <p className="text-xs text-stone-400 mb-0.5">Conversiones</p>
-              <p className="text-sm font-semibold text-stone-800">{fmt(conversions)}</p>
+              <p className="text-xs text-stone-400 mb-0.5">Impresiones</p>
+              <p className="text-sm font-semibold text-stone-800">{fmt(impressions)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-stone-400 mb-0.5">CTR</p>
+              <p className="text-sm font-semibold text-stone-800">{fmtPct(ctr)}</p>
+            </div>
+            <div>
+              <p className="text-xs text-stone-400 mb-0.5">CPC</p>
+              <p className="text-sm font-semibold text-stone-800">{formatCLPCompact(cpc)}</p>
+            </div>
+          </div>
+          {ads && ads.length > 0 && (
+            <div className="px-4 pb-4">
+              <p className="text-xs text-stone-400 font-medium uppercase tracking-wider mb-2">
+                Anuncios ({ads.length})
+              </p>
+              <div className="flex flex-col gap-2">
+                {ads.map(ad => <AdCard key={ad.id} ad={ad} />)}
+              </div>
             </div>
           )}
-          <div>
-            <p className="text-xs text-stone-400 mb-0.5">Impresiones</p>
-            <p className="text-sm font-semibold text-stone-800">{fmt(impressions)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-stone-400 mb-0.5">CTR</p>
-            <p className="text-sm font-semibold text-stone-800">{fmtPct(ctr)}</p>
-          </div>
-          <div>
-            <p className="text-xs text-stone-400 mb-0.5">CPC</p>
-            <p className="text-sm font-semibold text-stone-800">{formatCLPCompact(cpc)}</p>
-          </div>
         </div>
       )}
     </div>
@@ -364,6 +409,7 @@ function TabMeta({ since, until }: { since: string; until: string }) {
               impressions={camp.impressions}
               ctr={camp.impressions > 0 ? (camp.clicks / camp.impressions) * 100 : 0}
               cpc={camp.clicks > 0 ? camp.spend / camp.clicks : 0}
+              ads={camp.ads}
             />
           ))}
         </>
